@@ -22,7 +22,7 @@ async fn auth_spotify() -> AuthCodeSpotify {
     let url = spotify.get_authorize_url(false).unwrap();
     spotify.prompt_for_token(&url).await.unwrap();
 
-    return spotify;
+    spotify
 }
 
 // Get the currently playing track details
@@ -45,13 +45,14 @@ async fn get_currently_playing(spotify: &AuthCodeSpotify) -> Option<FullTrack> {
     if let PlayableItem::Track(track) = spotify_response.item.unwrap() {
         return Some(track);
     }
-    return None;
+
+    None
 }
 
 // Print the currently playing track details to the console
 async fn print_current_track_info(spotify: &AuthCodeSpotify) {
     // Grab the track info from the Spotify API
-    let track = get_currently_playing(&spotify).await;
+    let track = get_currently_playing(spotify).await;
 
     // If that worked out ok, then print the track info
     if let Some(track) = track {
