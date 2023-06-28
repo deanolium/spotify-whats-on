@@ -115,22 +115,23 @@ impl SpotifyClient {
     }
 }
 
-#[get("/?<code>&<state>&<error>")]
+#[get("/?<code>&<error>")]
 async fn handle_auth_response(
     code: Option<String>,
-    state: String,
     error: Option<String>,
     tx: &State<tokio::sync::mpsc::Sender<String>>,
-) {
+) -> &'static str {
     if let Some(error) = error {
         println!("Error in auth response: {}", error);
-        return;
+        return "Error in auth response!";
     }
 
     if let Some(code) = code {
         // We have the code, so send it across to the main thread, so we can continue the auth with Spotify
         tx.send(code).await.unwrap();
     }
+
+    "Thanks for authorising the app. You can close this window now."
 }
 
 #[rocket::main]
