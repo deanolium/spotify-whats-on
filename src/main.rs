@@ -22,18 +22,15 @@ impl SpotifyClient {
         let oauth = OAuth::from_env(scopes!("user-read-currently-playing")).unwrap();
         let client = AuthCodeSpotify::new(creds, oauth);
         Self {
-            client: client,
+            client,
             auth_code_rx,
         }
     }
 
-    // TODO: Make this return a Result, so we can handle errors more gracefully
     // TODO: Change the code to check if the token is already cached, and if so, use that instead of reauthing
-    async fn auth_spotify(&mut self) {
-        let spotify = &self.client;
+    async fn auth_spotify(&mut self) -> Result<(), String> {
         // Get the URL to authorise the app and pass it onto the cli prompt for the user to copy/paste
-        let url = spotify.get_authorize_url(false).unwrap();
-        // spotify.prompt_for_token(&url).await.unwrap();
+        let url = self.client.get_authorize_url(false).unwrap();
 
         match webbrowser::open(url.as_str()) {
             Ok(_) => println!("Opened {} in your browser.", url),
@@ -48,27 +45,37 @@ impl SpotifyClient {
         let code = self.auth_code_rx.recv().await.unwrap();
         println!("Got code in spotifyClient: {}", code);
 
-        spotify
+        self.client
             .request_token(&code)
             .await
             .expect("Couldn't get token :(");
 
-        // We should turn this into a result, so that if there's an issue and we can't get the token, then
-        // we can more gracefully handle it instead of just assuming it's done unless an error is thrown
+        Ok(())
     }
 
-    async fn get_currently_playing(&self) -> Option<FullTrack> {
-        let spotify = &self.client;
+    async fn get_currently_playing(&mut self) -> Option<FullTrack> {
         let market = Market::Country(Country::UnitedKingdom);
         // We only care about the Track type, so we can filter out the rest
         let additional_types = [AdditionalType::Track];
 
         // Get the currently playing track details
         // Notice that we unwrap this twice. Once to get the Option out of the Result, and then to get the actual response
-        let spotify_response = spotify
+        let result = self
+            .client
             .current_playing(Some(market), Some(&additional_types))
-            .await
-            .expect("Some issue talking with Spotify API");
+            .await;
+
+        let spotify_response = match result {
+            Ok(result) => result,
+            Err(_) => {
+                // first try auth again
+                self.auth_spotify().await.expect("Error in re-authorizing");
+                self.client
+                    .current_playing(Some(market), Some(&additional_types))
+                    .await
+                    .expect("Second attempt at getting currently playing failed")
+            }
+        };
 
         match spotify_response {
             Some(spotify_response) => {
@@ -83,7 +90,7 @@ impl SpotifyClient {
         None
     }
 
-    async fn print_current_track_info(&self) {
+    async fn print_current_track_info(&mut self) {
         // Grab the track info from the Spotify API
         let track = self.get_currently_playing().await;
 
@@ -117,7 +124,7 @@ async fn handle_auth_response(
 ) {
     if let Some(error) = error {
         println!("Error in auth response: {}", error);
-        return ();
+        return;
     }
 
     if let Some(code) = code {
@@ -143,15 +150,23 @@ async fn main() {
         ready_rx.await.unwrap();
 
         println!("Authing Spotify...");
-        spotify_client.auth_spotify().await;
+        let result = spotify_client.auth_spotify().await;
+        match result {
+            Ok(()) => {
+                // Now we're authed, we can start the loop to print the track info
+                let mut interval = interval_at(Instant::now(), std::time::Duration::from_secs(5));
 
-        // Now we're authed, we can start the loop to print the track info
-        let mut interval = interval_at(Instant::now(), std::time::Duration::from_secs(5));
-
-        loop {
-            interval.tick().await;
-            spotify_client.print_current_track_info().await;
-        }
+                loop {
+                    interval.tick().await;
+                    spotify_client.print_current_track_info().await;
+                }
+            }
+            Err(result) => {
+                print!("\x1B[2J\x1B[1;1H");
+                println!("**Error in authorizing**");
+                println!("**Error: {}", result);
+            }
+        };
     });
 
     // Start the web server
