@@ -3,11 +3,15 @@ extern crate rocket;
 use rocket::{fairing::AdHoc, State};
 use rspotify::{
     model::{AdditionalType, Country, FullTrack, Market, PlayableItem},
-    prelude::OAuthClient,
+    prelude::{BaseClient, OAuthClient},
     scopes, AuthCodeSpotify, Credentials, OAuth,
 };
 use std::io::Write;
 use tokio::time::{interval_at, Instant};
+
+fn clear_console() {
+    print!("\x1B[2J\x1B[1;1H");
+}
 
 struct SpotifyClient {
     client: AuthCodeSpotify,
@@ -21,13 +25,13 @@ impl SpotifyClient {
         let creds = Credentials::from_env().unwrap();
         let oauth = OAuth::from_env(scopes!("user-read-currently-playing")).unwrap();
         let client = AuthCodeSpotify::new(creds, oauth);
+
         Self {
             client,
             auth_code_rx,
         }
     }
 
-    // TODO: Change the code to check if the token is already cached, and if so, use that instead of reauthing
     async fn auth_spotify(&mut self) -> Result<(), String> {
         // Get the URL to authorise the app and pass it onto the cli prompt for the user to copy/paste
         let url = self.client.get_authorize_url(false).unwrap();
@@ -53,6 +57,20 @@ impl SpotifyClient {
         Ok(())
     }
 
+    async fn refresh_token(&mut self) -> Result<(), String> {
+        // Try to refresh the token. If that fails, then call auth spotify
+        match self.client.refresh_token().await {
+            Ok(_) => {
+                // Refresh worked, so let's continue
+                return Ok(());
+            }
+            Err(_) => {
+                println!("Refresh token failed, attempting to auth normally");
+                return self.auth_spotify().await;
+            }
+        };
+    }
+
     async fn get_currently_playing(&mut self) -> Option<FullTrack> {
         let market = Market::Country(Country::UnitedKingdom);
         // We only care about the Track type, so we can filter out the rest
@@ -69,7 +87,7 @@ impl SpotifyClient {
             Ok(result) => result,
             Err(_) => {
                 // first try auth again
-                self.auth_spotify().await.expect("Error in re-authorizing");
+                self.refresh_token().await.expect("Error in re-authorizing");
                 self.client
                     .current_playing(Some(market), Some(&additional_types))
                     .await
@@ -77,16 +95,14 @@ impl SpotifyClient {
             }
         };
 
-        match spotify_response {
-            Some(spotify_response) => {
-                // Slightly ugly part of Rust here. The item could be a Track or an Episode (in theory - we're filtering on Track above)
-                // so we need to match the enum and grab the track out of the Enum
-                if let PlayableItem::Track(track) = spotify_response.item.unwrap() {
-                    return Some(track);
-                }
+        if let Some(spotify_response) = spotify_response {
+            // Slightly ugly part of Rust here. The item could be a Track or an Episode (in theory - we're filtering on Track above)
+            // so we need to match the enum and grab the track out of the Enum
+            if let PlayableItem::Track(track) = spotify_response.item.unwrap() {
+                return Some(track);
             }
-            None => return None,
         }
+
         None
     }
 
@@ -95,7 +111,8 @@ impl SpotifyClient {
         let track = self.get_currently_playing().await;
 
         // Clear the console
-        print!("\x1B[2J\x1B[1;1H");
+        clear_console();
+
         // If that worked out ok, then print the track info
         match track {
             Some(track) => {
@@ -134,21 +151,26 @@ async fn handle_auth_response(
     "Thanks for authorising the app. You can close this window now."
 }
 
+fn print_error(reason: &str, error: &str) {
+    clear_console();
+    println!("**{}**", reason);
+    println!("**Error: {}", error);
+}
+
 #[rocket::main]
 async fn main() {
+    // A channel to handle passing the response code from the Spotify API to the main loop thread
     let (auth_code_tx, auth_code_rx) = tokio::sync::mpsc::channel(100);
+
+    // A channel to say when the web server is online and ready for us to actually do stuff
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
-    let mut spotify_client = SpotifyClient::new(auth_code_rx);
-
-    let config = rocket::Config {
-        port: 3000,
-        ..Default::default()
-    };
-
+    // The main Spotify Loop put into its own thread
     tokio::spawn(async move {
         // Wait for the web server to be ready
         ready_rx.await.unwrap();
+
+        let mut spotify_client = SpotifyClient::new(auth_code_rx);
 
         println!("Authing Spotify...");
         let result = spotify_client.auth_spotify().await;
@@ -159,23 +181,34 @@ async fn main() {
 
                 loop {
                     interval.tick().await;
-                    spotify_client.print_current_track_info().await;
+                    match spotify_client.refresh_token().await {
+                        Ok(_) => {
+                            spotify_client.print_current_track_info().await;
+                        }
+                        Err(error) => {
+                            print_error("Error refreshing token", error.as_str());
+                        }
+                    }
                 }
             }
-            Err(result) => {
-                print!("\x1B[2J\x1B[1;1H");
-                println!("**Error in authorizing**");
-                println!("**Error: {}", result);
+            Err(error) => {
+                print_error("Error in Initial Auth", error.as_str());
             }
         };
     });
 
+    let server_config = rocket::Config {
+        port: 3000,
+        ..Default::default()
+    };
+
     // Start the web server
+    // This is purely to handle the Spotify auth api returning on successful auth
     rocket::build()
-        .configure(config)
+        .configure(server_config)
         .mount("/", routes![handle_auth_response])
         .manage(auth_code_tx.clone())
-        .attach(AdHoc::on_liftoff("Start the auth process", |_| {
+        .attach(AdHoc::on_liftoff("Flag to start the auth process", |_| {
             Box::pin(async move {
                 ready_tx.send(()).unwrap();
             })
