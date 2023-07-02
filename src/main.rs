@@ -161,36 +161,46 @@ async fn handle_auth_response(
     "Thanks for authorising the app. You can close this window now."
 }
 
+// The main thread for the application
+// This uses ready_rx to wait for the web server to say it's ready before setting up the spotify client
+// and running the main loop
+// auth_code_rx is used to receive the authentication code from Spotify if it needs to get the user to login
+// and then accesses the callback
+async fn main_loop_thread(
+    ready_rx: tokio::sync::oneshot::Receiver<()>,
+    auth_code_rx: tokio::sync::mpsc::Receiver<String>,
+) {
+    // Wait for the web server to be ready
+    ready_rx.await.unwrap();
+
+    let mut spotify_client = SpotifyClient::new(auth_code_rx);
+
+    match spotify_client.auth_spotify().await {
+        Ok(_) => {
+            let mut interval = interval_at(Instant::now(), std::time::Duration::from_secs(5));
+
+            loop {
+                interval.tick().await;
+                print_current_track_info(&mut spotify_client).await;
+            }
+        }
+
+        Err(error) => {
+            print_error("Token Error", error.as_str());
+        }
+    }
+}
+
 #[rocket::main]
 async fn main() {
     // A channel to handle passing the response code from the Spotify API to the main loop thread
-    let (auth_code_tx, auth_code_rx) = tokio::sync::mpsc::channel(100);
+    let (auth_code_tx, auth_code_rx) = tokio::sync::mpsc::channel::<String>(100);
 
     // A channel to say when the web server is online and ready for us to actually do stuff
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     // The main Spotify Loop put into its own thread
-    tokio::spawn(async move {
-        // Wait for the web server to be ready
-        ready_rx.await.unwrap();
-
-        let mut spotify_client = SpotifyClient::new(auth_code_rx);
-
-        match spotify_client.auth_spotify().await {
-            Ok(_) => {
-                let mut interval = interval_at(Instant::now(), std::time::Duration::from_secs(5));
-
-                loop {
-                    interval.tick().await;
-                    print_current_track_info(&mut spotify_client).await;
-                }
-            }
-
-            Err(error) => {
-                print_error("Token Error", error.as_str());
-            }
-        }
-    });
+    tokio::spawn(main_loop_thread(ready_rx, auth_code_rx));
 
     let server_config = rocket::Config {
         port: 3000,
