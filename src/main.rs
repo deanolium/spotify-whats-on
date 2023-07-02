@@ -108,31 +108,38 @@ impl SpotifyClient {
 
         None
     }
+}
 
-    async fn print_current_track_info(&mut self) {
-        // Grab the track info from the Spotify API
-        let track = self.get_currently_playing().await;
+// Print out the currently playing track on the provided spotify client
+async fn print_current_track_info(spotify_client: &mut SpotifyClient) {
+    // Grab the track info from the Spotify API
+    let track = spotify_client.get_currently_playing().await;
 
-        // Clear the console
-        clear_console();
+    // Clear the console
+    clear_console();
 
-        // If that worked out ok, then print the track info
-        match track {
-            Some(track) => {
-                // print the track
-                print!(
-                    "{} - {} ({})",
-                    track.artists[0].name, track.name, track.popularity
-                );
-            }
-            None => {
-                print!("Nothing playing");
-            }
+    // If that worked out ok, then print the track info
+    match track {
+        Some(track) => {
+            // print the track
+            print!(
+                "{} - {} ({})",
+                track.artists[0].name, track.name, track.popularity
+            );
         }
-
-        // Flush to make sure it's printed
-        std::io::stdout().flush().unwrap();
+        None => {
+            print!("Nothing playing");
+        }
     }
+
+    // Flush to make sure it's printed
+    std::io::stdout().flush().unwrap();
+}
+
+fn print_error(reason: &str, error: &str) {
+    clear_console();
+    println!("**{}**", reason);
+    println!("**Error: {}", error);
 }
 
 #[get("/?<code>&<error>")]
@@ -152,12 +159,6 @@ async fn handle_auth_response(
     }
 
     "Thanks for authorising the app. You can close this window now."
-}
-
-fn print_error(reason: &str, error: &str) {
-    clear_console();
-    println!("**{}**", reason);
-    println!("**Error: {}", error);
 }
 
 #[rocket::main]
@@ -181,7 +182,7 @@ async fn main() {
 
                 loop {
                     interval.tick().await;
-                    spotify_client.print_current_track_info().await;
+                    print_current_track_info(&mut spotify_client).await;
                 }
             }
 
