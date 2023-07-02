@@ -50,3 +50,6 @@ Cargo.lock
 *.pdb
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,macos,dotenv
+
+# Don't cache the spotify token cache file
+**/.spotify_token_cache.json

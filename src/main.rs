@@ -3,8 +3,8 @@ extern crate rocket;
 use rocket::{fairing::AdHoc, State};
 use rspotify::{
     model::{AdditionalType, Country, FullTrack, Market, PlayableItem},
-    prelude::{BaseClient, OAuthClient},
-    scopes, AuthCodeSpotify, Credentials, OAuth,
+    prelude::OAuthClient,
+    scopes, AuthCodeSpotify, Config, Credentials, OAuth,
 };
 use std::io::Write;
 use tokio::time::{interval_at, Instant};
@@ -24,7 +24,12 @@ impl SpotifyClient {
         // We need RSPOTIFY_CLIENT_ID, RSPOTIFY_CLIENT_SECRET, RSPOTIFY_REDIRECT_URI defined there
         let creds = Credentials::from_env().unwrap();
         let oauth = OAuth::from_env(scopes!("user-read-currently-playing")).unwrap();
-        let client = AuthCodeSpotify::new(creds, oauth);
+        let config = Config {
+            token_cached: true,
+            token_refreshing: true,
+            ..Default::default()
+        };
+        let client = AuthCodeSpotify::with_config(creds, oauth, config);
 
         Self {
             client,
@@ -32,7 +37,19 @@ impl SpotifyClient {
         }
     }
 
+    async fn check_if_valid_token_cached(&mut self) -> bool {
+        if let Ok(Some(token)) = self.client.read_token_cache(false).await {
+            *self.client.token.lock().await.unwrap() = Some(token);
+            return true;
+        }
+        false
+    }
+
     async fn auth_spotify(&mut self) -> Result<(), String> {
+        if self.check_if_valid_token_cached().await {
+            return Ok(());
+        }
+
         // Get the URL to authorise the app and pass it onto the cli prompt for the user to copy/paste
         let url = self.client.get_authorize_url(false).unwrap();
 
@@ -57,20 +74,6 @@ impl SpotifyClient {
         Ok(())
     }
 
-    async fn refresh_token(&mut self) -> Result<(), String> {
-        // Try to refresh the token. If that fails, then call auth spotify
-        match self.client.refresh_token().await {
-            Ok(_) => {
-                // Refresh worked, so let's continue
-                return Ok(());
-            }
-            Err(_) => {
-                println!("Refresh token failed, attempting to auth normally");
-                return self.auth_spotify().await;
-            }
-        };
-    }
-
     async fn get_currently_playing(&mut self) -> Option<FullTrack> {
         let market = Market::Country(Country::UnitedKingdom);
         // We only care about the Track type, so we can filter out the rest
@@ -87,7 +90,7 @@ impl SpotifyClient {
             Ok(result) => result,
             Err(_) => {
                 // first try auth again
-                self.refresh_token().await.expect("Error in re-authorizing");
+                self.auth_spotify().await.expect("Error in re-authorizing");
                 self.client
                     .current_playing(Some(market), Some(&additional_types))
                     .await
@@ -172,29 +175,20 @@ async fn main() {
 
         let mut spotify_client = SpotifyClient::new(auth_code_rx);
 
-        println!("Authing Spotify...");
-        let result = spotify_client.auth_spotify().await;
-        match result {
-            Ok(()) => {
-                // Now we're authed, we can start the loop to print the track info
+        match spotify_client.auth_spotify().await {
+            Ok(_) => {
                 let mut interval = interval_at(Instant::now(), std::time::Duration::from_secs(5));
 
                 loop {
                     interval.tick().await;
-                    match spotify_client.refresh_token().await {
-                        Ok(_) => {
-                            spotify_client.print_current_track_info().await;
-                        }
-                        Err(error) => {
-                            print_error("Error refreshing token", error.as_str());
-                        }
-                    }
+                    spotify_client.print_current_track_info().await;
                 }
             }
+
             Err(error) => {
-                print_error("Error in Initial Auth", error.as_str());
+                print_error("Token Error", error.as_str());
             }
-        };
+        }
     });
 
     let server_config = rocket::Config {
