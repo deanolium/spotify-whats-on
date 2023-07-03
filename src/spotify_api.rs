@@ -1,6 +1,6 @@
 use rspotify::{
-    model::{AdditionalType, Country, FullTrack, Market, PlayableItem},
-    prelude::OAuthClient,
+    model::{AdditionalType, AudioFeatures, Country, FullTrack, Market, PlayableItem, TrackId},
+    prelude::{BaseClient, OAuthClient},
     scopes, AuthCodeSpotify, Config, Credentials, OAuth,
 };
 
@@ -98,5 +98,17 @@ impl SpotifyClient {
         }
 
         None
+    }
+
+    pub async fn get_track_features(&mut self, track_id: TrackId<'_>) -> Option<AudioFeatures> {
+        let result = self.client.track_features(track_id).await;
+
+        match result {
+            Ok(features) => return Some(features),
+            Err(error) => {
+                eprintln!("Error: {}", error);
+                return None;
+            }
+        }
     }
 }

@@ -1,12 +1,64 @@
 #[macro_use]
 extern crate rocket;
 use rocket::{fairing::AdHoc, State};
+use rspotify::model::{AudioFeatures, Modality};
 use std::io::Write;
 use tokio::time::{interval_at, Instant};
 mod spotify_api;
 
 fn clear_console() {
     print!("\x1B[2J\x1B[1;1H");
+}
+
+fn get_key(key_index: i32) -> String {
+    let possible_keys = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+
+    let key = if key_index == -1 {
+        "Not Detected"
+    } else {
+        *possible_keys.get(key_index as usize).unwrap()
+    };
+
+    String::from(key)
+}
+
+fn print_track_features(features: AudioFeatures) {
+    let mode = if features.mode == Modality::Major {
+        "Major"
+    } else {
+        "Minor"
+    };
+
+    let key = get_key(features.key);
+
+    print!(
+        "\n\nAcousticness: {}
+Danceability: {}
+Energy: {}
+Intrumentalness: {}
+Key: {}
+Liveness: {}
+Loudness: {}
+Mode: {}
+Speechiness: {}
+Tempo: {}
+Time Signature: {}/4
+Valence: {}",
+        features.acousticness,
+        features.danceability,
+        features.energy,
+        features.instrumentalness,
+        key,
+        features.liveness,
+        features.loudness,
+        mode,
+        features.speechiness,
+        features.tempo,
+        features.time_signature,
+        features.valence
+    );
 }
 
 // Print out the currently playing track on the provided spotify client
@@ -25,6 +77,14 @@ async fn print_current_track_info(spotify_client: &mut spotify_api::SpotifyClien
                 "{} - {} ({})",
                 track.artists[0].name, track.name, track.popularity
             );
+
+            if let Some(track_id) = track.id {
+                let features = spotify_client.get_track_features(track_id).await;
+
+                if let Some(features) = features {
+                    print_track_features(features);
+                }
+            }
         }
         None => {
             print!("Nothing playing");
